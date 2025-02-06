@@ -1,3 +1,26 @@
+# Walk-through Level5
+
+## Introduction
+Level5 is part of the Rainfall challenge series, where the goal is to escalate privileges by exploiting a vulnerable binary. This walk-through covers analyzing the binary, identifying vulnerabilities, and obtaining elevated access.
+
+## Security Checks
+Examining the binary's security mechanisms reveals that it lacks several modern protections, making it more susceptible to exploitation:
+
+```bash
+level5@RainFall:~$ checksec --file level5 
+RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
+No RELRO        No canary found   NX disabled   No PIE          No RPATH   No RUNPATH   level5
+```
+**Key observations:**
+```
+> **No RELRO** : The binary does not protect against GOT overwrite attacks.
+
+> **No stack canary** : Buffer overflow attacks are possible.
+
+> **NX disabled** : Stack is executable, allowing shellcode execution.
+
+> **No PIE** : The binary has a fixed memory layout, making exploitation easier.
+```
 ### Analyzing `level5`
 
 After running the command `ls -l level5`, we observe the following output:

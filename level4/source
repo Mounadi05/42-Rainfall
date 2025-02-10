@@ -1,0 +1,27 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+int  p(char *format)
+{
+  return printf(format);
+}
+
+int n()
+{
+  int result; 
+  char s[520]; 
+  int m;
+  
+  fgets(s, 512, stdin);
+  p(s);
+  result = m;
+  if ( m == 16930116 )
+    return system("/bin/cat /home/user/level5/.pass");
+  return result;
+}
+
+int main(int argc, const char **argv, const char **envp)
+{
+  return n();
+}

